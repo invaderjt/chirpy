@@ -1,17 +1,26 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"net/http"
+	"sync/atomic"
 )
+
+type apiConfig struct {
+	fileserverHits atomic.Int32
+}
 
 func main() {
 	const port = "8080"
 	const filepathRoot = "."
 
+	apiCfg := apiConfig{}
 	mux := http.NewServeMux()
-	mux.Handle("/app/", http.StripPrefix("/app", http.FileServer(http.Dir(filepathRoot))))
-	mux.HandleFunc("/healthz", handleHealthz)
+	mux.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir(filepathRoot)))))
+	mux.HandleFunc("GET /healthz", handleHealthz)
+	mux.HandleFunc("GET /metrics", apiCfg.handleMetrics)
+	mux.HandleFunc("POST /reset", apiCfg.handleReset)
 
 	server := &http.Server{
 		Addr:    ":" + port,
@@ -29,4 +38,23 @@ func handleHealthz(writer http.ResponseWriter, req *http.Request) {
 	if err != nil {
 		log.Println(err)
 	}
+}
+
+func (cfg *apiConfig) handleMetrics(writer http.ResponseWriter, req *http.Request) {
+	hits := fmt.Sprintf("Hits: %v", cfg.fileserverHits.Load())
+	_, err := writer.Write([]byte(hits))
+	if err != nil {
+		log.Println(err)
+	}
+}
+
+func (cfg *apiConfig) handleReset(writer http.ResponseWriter, req *http.Request) {
+	cfg.fileserverHits.Swap(0)
+}
+
+func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, req *http.Request) {
+		cfg.fileserverHits.Add(1)
+		next.ServeHTTP(writer, req)
+	})
 }
